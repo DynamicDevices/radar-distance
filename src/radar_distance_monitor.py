@@ -7,6 +7,8 @@ and displays the results in a real-time graph.
 
 import asyncio
 import asyncssh
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for GUI display
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from collections import deque
@@ -34,6 +36,7 @@ class RadarDataCollector:
         self.host_id = host_id
         self.tag = tag or host_id  # Use tag if provided, otherwise fall back to host_id
         self.data_queue = queue.Queue()
+        self.log_queue = queue.Queue()
         self.running = False
         
     async def collect_data(self):
@@ -46,37 +49,70 @@ class RadarDataCollector:
                 self.host,
                 username=self.username,
                 password=self.password,
-                known_hosts=None  # Accept any host key (use with caution)
+                known_hosts=None,  # Accept any host key (use with caution)
+                options=asyncssh.SSHClientConnectionOptions(
+                    request_pty=True  # Request PTY at connection level
+                )
             ) as conn:
                 logger.info(f"Successfully connected to {self.host_id}")
                 
-                # Run the command and stream output
-                async with conn.create_process(self.command) as process:
+                # Run the command with proper PTY settings for sudo
+                async with conn.create_process(
+                    self.command, 
+                    request_pty=True,
+                    encoding='utf-8',
+                    term_type='xterm'
+                ) as process:
                     self.running = True
                     
-                    async for line in process.stdout:
-                        if not self.running:
-                            break
-                            
-                        line = line.strip()
-                        if line:
-                            try:
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    presence = int(parts[0])
-                                    distance = float(parts[1])
-                                    timestamp = time.time()
-                                    
-                                    # Only queue valid distance measurements
-                                    if presence == 1:
-                                        self.data_queue.put((timestamp, distance))
-                                        logger.debug(f"{self.host_id}: Distance = {distance}m")
-                                    else:
-                                        # Put None to indicate no presence detected
-                                        self.data_queue.put((timestamp, None))
+                    logger.info(f"Successfully started command on {self.host_id}")
+                    
+                    # Create tasks to read both stdout and stderr
+                    async def read_stdout():
+                        async for line in process.stdout:
+                            if not self.running:
+                                break
+                                
+                            line = line.strip()
+                            if line:
+                                # Forward raw stdout line to per-host log queue
+                                try:
+                                    self.log_queue.put((time.time(), 'STDOUT', line))
+                                except Exception:
+                                    pass
+                                try:
+                                    parts = line.split()
+                                    if len(parts) >= 2:
+                                        presence = int(parts[0])
+                                        distance = float(parts[1])
+                                        timestamp = time.time()
                                         
-                            except (ValueError, IndexError) as e:
-                                logger.warning(f"{self.host_id}: Error parsing line '{line}': {e}")
+                                        # Only queue valid distance measurements
+                                        if presence == 1:
+                                            self.data_queue.put((timestamp, distance))
+                                            logger.debug(f"{self.host_id}: Distance = {distance}m")
+                                        else:
+                                            # Put None to indicate no presence detected
+                                            self.data_queue.put((timestamp, None))
+                                            
+                                except (ValueError, IndexError) as e:
+                                    logger.warning(f"{self.host_id}: Error parsing line '{line}': {e}")
+                    
+                    async def read_stderr():
+                        async for line in process.stderr:
+                            if not self.running:
+                                break
+                            line = line.strip()
+                            if line:
+                                logger.error(f"{self.host_id} STDERR: {line}")
+                                # Forward raw stderr line to per-host log queue
+                                try:
+                                    self.log_queue.put((time.time(), 'STDERR', line))
+                                except Exception:
+                                    pass
+                    
+                    # Run both readers concurrently
+                    await asyncio.gather(read_stdout(), read_stderr(), return_exceptions=True)
                                 
         except Exception as e:
             logger.error(f"Error connecting to {self.host_id} ({self.host}): {e}")
@@ -92,18 +128,31 @@ class RealTimeGrapher:
     def __init__(self, collectors: List[RadarDataCollector], max_points: int = 100):
         self.collectors = collectors
         self.max_points = max_points
+        self.time_window = 120  # Show last 2 minutes (120 seconds)
         
         # Data storage for each host
         self.data = {}
         for collector in collectors:
             self.data[collector.host_id] = {
-                'times': deque(maxlen=max_points),
-                'distances': deque(maxlen=max_points),
-                'line': None
+                'times': deque(),  # No maxlen - we'll manage time-based cleanup
+                'distances': deque(),
+                'line': None,
+                'connected': False,
+                'last_data_time': None,
+                'connection_timeout': 10.0  # Consider disconnected after 10 seconds without data
             }
         
-        # Set up the plot
-        self.fig, self.ax = plt.subplots(figsize=(12, 6))
+        # Set up the plot with an additional text area for recent logs
+        self.fig = plt.figure(figsize=(12, 7.5))
+        # Main chart axes (top ~75%)
+        self.ax = self.fig.add_axes([0.08, 0.28, 0.88, 0.65])
+        # Log panel axes (bottom ~20%)
+        self.log_ax = self.fig.add_axes([0.08, 0.06, 0.88, 0.18])
+        self.log_ax.axis('off')
+        self.log_text = self.log_ax.text(0.01, 0.98, "", va='top', ha='left', family='monospace', fontsize=9)
+        self.max_log_lines = 8
+        # Per-host rolling recent logs
+        self.recent_logs = {collector.host_id: deque(maxlen=50) for collector in collectors}
         self.ax.set_xlabel('Time (seconds)')
         self.ax.set_ylabel('Distance (meters)')
         self.ax.set_title('Real-time Radar Distance Monitoring')
@@ -113,10 +162,10 @@ class RealTimeGrapher:
         colors = ['blue', 'red', 'green', 'orange', 'purple']
         for i, collector in enumerate(collectors):
             color = colors[i % len(colors)]
-            line, = self.ax.plot([], [], color=color, label=f'{collector.tag}', linewidth=2)
+            line, = self.ax.plot([], [], color=color, label=f'{collector.tag} (Connecting...)', linewidth=2)
             self.data[collector.host_id]['line'] = line
         
-        self.ax.legend()
+        self.legend = self.ax.legend(loc='upper right')
         
         # Animation setup
         self.start_time = time.time()
@@ -124,16 +173,24 @@ class RealTimeGrapher:
     def update_plot(self, frame):
         """Update the plot with new data."""
         current_time = time.time()
+        current_relative_time = current_time - self.start_time
+        
+        # Track if we need to update legend
+        legend_needs_update = False
         
         # Collect new data from all hosts
         for collector in self.collectors:
             host_data = self.data[collector.host_id]
+            was_connected = host_data['connected']
             
             # Process all available data points
+            data_received = False
             while not collector.data_queue.empty():
                 try:
                     timestamp, distance = collector.data_queue.get_nowait()
                     relative_time = timestamp - self.start_time
+                    data_received = True
+                    host_data['last_data_time'] = current_time
                     
                     if distance is not None:  # Valid distance measurement
                         host_data['times'].append(relative_time)
@@ -143,28 +200,77 @@ class RealTimeGrapher:
                 except queue.Empty:
                     break
             
+            # Update connection status based on recent data and timeouts
+            if data_received:
+                if not host_data['connected']:
+                    host_data['connected'] = True
+                    legend_needs_update = True
+            else:
+                # Check for timeout - if no data received recently, mark as disconnected
+                if host_data['last_data_time'] is not None:
+                    time_since_last_data = current_time - host_data['last_data_time']
+                    if time_since_last_data > host_data['connection_timeout']:
+                        if host_data['connected']:
+                            host_data['connected'] = False
+                            legend_needs_update = True
+            
+            # Remove old data points (older than time_window)
+            cutoff_time = current_relative_time - self.time_window
+            while host_data['times'] and host_data['times'][0] < cutoff_time:
+                host_data['times'].popleft()
+                host_data['distances'].popleft()
+            
             # Update the line plot
             if host_data['times'] and host_data['distances']:
                 host_data['line'].set_data(list(host_data['times']), list(host_data['distances']))
         
-        # Auto-scale the plot
-        if any(self.data[cid]['times'] for cid in self.data):
-            all_times = []
-            all_distances = []
+        # Set up time window (always show last 2 minutes)
+        time_start = current_relative_time - self.time_window
+        time_end = current_relative_time
+        self.ax.set_xlim(time_start, time_end)
+        
+        # Auto-scale Y-axis based on current data
+        all_distances = []
+        for host_data in self.data.values():
+            if host_data['distances']:
+                all_distances.extend(host_data['distances'])
+        
+        if all_distances:
+            min_dist = min(all_distances)
+            max_dist = max(all_distances)
+            dist_range = max_dist - min_dist
+            dist_margin = max(0.05, dist_range * 0.1)  # At least 5cm margin
             
-            for host_data in self.data.values():
-                if host_data['times'] and host_data['distances']:
-                    all_times.extend(host_data['times'])
-                    all_distances.extend(host_data['distances'])
-            
-            if all_times and all_distances:
-                time_margin = max(5, (max(all_times) - min(all_times)) * 0.1)
-                dist_margin = max(0.1, (max(all_distances) - min(all_distances)) * 0.1)
-                
-                self.ax.set_xlim(min(all_times) - time_margin, max(all_times) + time_margin)
-                self.ax.set_ylim(min(all_distances) - dist_margin, max(all_distances) + dist_margin)
+            self.ax.set_ylim(min_dist - dist_margin, max_dist + dist_margin)
+        else:
+            # Default range if no data
+            self.ax.set_ylim(0, 2)
+        
+        # Update legend if connection status changed
+        if legend_needs_update:
+            self.update_legend()
+        
+        # Update the log panel with the most recent lines from all hosts
+        self.update_log_panel()
         
         return [host_data['line'] for host_data in self.data.values()]
+    
+    def update_legend(self):
+        """Update the legend with current connection status."""
+        labels = []
+        for collector in self.collectors:
+            host_data = self.data[collector.host_id]
+            if host_data['connected']:
+                status = "✓ Connected"
+            elif host_data['last_data_time'] is not None:
+                status = "✗ Disconnected"
+            else:
+                status = "⚡ Connecting..."
+            labels.append(f"{collector.tag} ({status})")
+        
+        # Update legend with fixed position
+        self.legend.remove()
+        self.legend = self.ax.legend([host_data['line'] for host_data in self.data.values()], labels, loc='upper right')
     
     def start(self):
         """Start the real-time plotting."""
@@ -174,8 +280,37 @@ class RealTimeGrapher:
         plt.show()
         return ani
 
+    def update_log_panel(self):
+        """Collect recent raw log lines from collectors and render them in the log panel."""
+        # Drain new log lines from collectors
+        for collector in self.collectors:
+            while not collector.log_queue.empty():
+                try:
+                    ts, stream, line = collector.log_queue.get_nowait()
+                    # Keep a compact timestamp relative to start
+                    self.recent_logs[collector.host_id].append((ts - self.start_time, collector.tag, stream, line))
+                except queue.Empty:
+                    break
+        # Build combined view: interleave last few entries across hosts, show newest last
+        combined = []
+        for host_id, entries in self.recent_logs.items():
+            combined.extend(entries)
+        # Sort by timestamp and take the last N
+        combined.sort(key=lambda x: x[0])
+        tail = combined[-self.max_log_lines:]
+        # Format lines
+        rendered = []
+        for rel_ts, tag, stream, line in tail:
+            prefix = f"[{rel_ts:6.1f}s] {tag} {stream}: "
+            rendered.append(prefix + line)
+        self.log_text.set_text("\n".join(rendered))
+
 async def run_ssh_collectors(collectors: List[RadarDataCollector]):
     """Run all SSH collectors concurrently."""
+    logger.info(f"Starting SSH data collection for {len(collectors)} hosts...")
+    for i, collector in enumerate(collectors):
+        logger.info(f"Host {i+1}: {collector.tag} at {collector.host}")
+    
     tasks = [asyncio.create_task(collector.collect_data()) for collector in collectors]
     try:
         await asyncio.gather(*tasks)
@@ -186,11 +321,21 @@ async def run_ssh_collectors(collectors: List[RadarDataCollector]):
 
 def load_config():
     """Load configuration from config.py file."""
+    import os
+    import sys
+    import importlib.util
+    
     try:
-        # Try to import config.py
-        import config
-        return config
-    except ImportError:
+        # Try to import config.py using importlib
+        config_path = os.path.join(os.getcwd(), 'config.py')
+        if os.path.exists(config_path):
+            spec = importlib.util.spec_from_file_location("config", config_path)
+            config = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(config)
+            return config
+        else:
+            raise ImportError("config.py file not found")
+    except Exception as e:
         logger.error("config.py not found. Please copy config_example.py to config.py and modify it.")
         logger.error("You can also use command-line arguments instead.")
         return None
@@ -214,12 +359,17 @@ def main():
     
     parser.add_argument('--max-points', type=int, default=100, 
                        help='Maximum number of data points to display')
+    parser.add_argument('--test-mode', action='store_true',
+                       help='Run in test mode (SSH connections only, no GUI)')
     
     args = parser.parse_args()
     
     # Check if config.py exists and use it by default, or if --config-file is specified
     config_exists = os.path.exists('config.py')
-    use_config_file = config_exists or args.config_file
+    # Use config file if explicitly requested, or if it exists and no CLI args provided
+    cli_args_provided = any([args.host1, args.user1, args.pass1, args.cmd1, 
+                           args.host2, args.user2, args.pass2, args.cmd2])
+    use_config_file = args.config_file or (config_exists and not cli_args_provided)
     
     if use_config_file:
         logger.info("Loading configuration from config.py")
@@ -270,30 +420,45 @@ def main():
         ]
         max_points = args.max_points
     
-    # Create the grapher
-    grapher = RealTimeGrapher(collectors, max_points)
-    
-    # Start SSH data collection in a separate thread
-    def run_async_collectors():
+    if args.test_mode:
+        # Test mode: just run SSH connections without GUI
+        logger.info("Running in test mode (SSH connections only)")
         try:
             asyncio.run(run_ssh_collectors(collectors))
         except KeyboardInterrupt:
-            pass
-    
-    ssh_thread = threading.Thread(target=run_async_collectors, daemon=True)
-    ssh_thread.start()
-    
-    # Start real-time plotting (this will block until window is closed)
-    try:
-        logger.info("Starting real-time graph...")
-        ani = grapher.start()
-    except KeyboardInterrupt:
-        logger.info("Application interrupted by user")
-    finally:
-        # Stop collectors
-        for collector in collectors:
-            collector.stop()
-        logger.info("Application stopped")
+            logger.info("Test mode interrupted by user")
+        finally:
+            for collector in collectors:
+                collector.stop()
+            logger.info("Test mode stopped")
+    else:
+        # Normal mode with GUI
+        # Create the grapher
+        grapher = RealTimeGrapher(collectors, max_points)
+        
+        # Start SSH data collection in a separate thread
+        def run_async_collectors():
+            try:
+                asyncio.run(run_ssh_collectors(collectors))
+            except KeyboardInterrupt:
+                pass
+        
+        ssh_thread = threading.Thread(target=run_async_collectors, daemon=True)
+        ssh_thread.start()
+        
+        # Start real-time plotting (this will block until window is closed)
+        try:
+            logger.info("Starting real-time graph...")
+            ani = grapher.start()
+            # Keep the animation alive
+            plt.show()
+        except KeyboardInterrupt:
+            logger.info("Application interrupted by user")
+        finally:
+            # Stop collectors
+            for collector in collectors:
+                collector.stop()
+            logger.info("Application stopped")
 
 if __name__ == "__main__":
     main()
