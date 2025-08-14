@@ -144,15 +144,16 @@ class RealTimeGrapher:
         
         # Set up the plot with an additional text area for recent logs
         self.fig = plt.figure(figsize=(12, 7.5))
-        # Main chart axes (top ~75%)
-        self.ax = self.fig.add_axes([0.08, 0.28, 0.88, 0.65])
-        # Log panel axes (bottom ~20%)
-        self.log_ax = self.fig.add_axes([0.08, 0.06, 0.88, 0.18])
+        # Main chart axes (upper area)
+        self.ax = self.fig.add_axes([0.08, 0.36, 0.88, 0.60])
+        # Log panel axes (lower area, larger height, placed lower to avoid overlap with legend)
+        self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.30])
         self.log_ax.axis('off')
-        self.log_text = self.log_ax.text(0.01, 0.98, "", va='top', ha='left', family='monospace', fontsize=9)
-        self.max_log_lines = 8
-        # Per-host rolling recent logs
-        self.recent_logs = {collector.host_id: deque(maxlen=50) for collector in collectors}
+        # Increase font size for distance viewing (half previous), and nudge one line down
+        self.log_text = self.log_ax.text(0.01, 0.90, "", va='top', ha='left', family='monospace', fontsize=22)
+        self.max_log_lines = 8  # retained but unused for now; kept for future toggles
+        # Per-host latest log line (timestamp, tag, stream, line)
+        self.latest_logs = {collector.host_id: None for collector in collectors}
         self.ax.set_xlabel('Time (seconds)')
         self.ax.set_ylabel('Distance (meters)')
         self.ax.set_title('Real-time Radar Distance Monitoring')
@@ -195,7 +196,13 @@ class RealTimeGrapher:
                     if distance is not None:  # Valid distance measurement
                         host_data['times'].append(relative_time)
                         host_data['distances'].append(distance)
+                        # Track last presence/distance for aligned log display
+                        host_data['last_presence'] = 1
+                        host_data['last_distance'] = distance
                     # Skip None values (no presence detected)
+                    else:
+                        host_data['last_presence'] = 0
+                        host_data['last_distance'] = None
                         
                 except queue.Empty:
                     break
@@ -250,7 +257,7 @@ class RealTimeGrapher:
         if legend_needs_update:
             self.update_legend()
         
-        # Update the log panel with the most recent lines from all hosts
+        # Update the log panel with the most recent line from each host
         self.update_log_panel()
         
         return [host_data['line'] for host_data in self.data.values()]
@@ -281,28 +288,33 @@ class RealTimeGrapher:
         return ani
 
     def update_log_panel(self):
-        """Collect recent raw log lines from collectors and render them in the log panel."""
-        # Drain new log lines from collectors
+        """Collect latest raw log line per host and render them in the log panel as fixed rows."""
+        # Drain new log lines from collectors and retain only the most recent per host
         for collector in self.collectors:
             while not collector.log_queue.empty():
                 try:
                     ts, stream, line = collector.log_queue.get_nowait()
-                    # Keep a compact timestamp relative to start
-                    self.recent_logs[collector.host_id].append((ts - self.start_time, collector.tag, stream, line))
+                    self.latest_logs[collector.host_id] = (ts - self.start_time, collector.tag, stream, line)
                 except queue.Empty:
                     break
-        # Build combined view: interleave last few entries across hosts, show newest last
-        combined = []
-        for host_id, entries in self.recent_logs.items():
-            combined.extend(entries)
-        # Sort by timestamp and take the last N
-        combined.sort(key=lambda x: x[0])
-        tail = combined[-self.max_log_lines:]
-        # Format lines
+        # Render one line per host, in collector order, aligned columns
         rendered = []
-        for rel_ts, tag, stream, line in tail:
-            prefix = f"[{rel_ts:6.1f}s] {tag} {stream}: "
-            rendered.append(prefix + line)
+        for collector in self.collectors:
+            latest = self.latest_logs.get(collector.host_id)
+            # Pull last parsed presence/distance if available
+            host_data = self.data.get(collector.host_id, {})
+            last_presence = host_data.get('last_presence')
+            last_distance = host_data.get('last_distance')
+            pres_str = '-' if last_presence is None else f"{last_presence:d}"
+            dist_str = '---' if last_distance is None else f"{last_distance:0.3f}m"
+            if latest is None:
+                rel_ts = 0.0
+            else:
+                rel_ts, tag, stream, raw = latest
+            # Render without stream/raw content
+            rendered.append(
+                f"[{rel_ts:6.1f}s]  {collector.tag:<14}  pres:{pres_str:>1}  dist:{dist_str:>9}"
+            )
         self.log_text.set_text("\n".join(rendered))
 
 async def run_ssh_collectors(collectors: List[RadarDataCollector]):
