@@ -4,18 +4,31 @@ A Python application that connects to two SSH hosts, runs distance measurement c
 
 ## Quick Start
 
-1. **Install dependencies:**
+### Windows (recommended for testers)
+
+Option A: Prebuilt download
+- Download `radar-distance-windows.zip` from GitHub (Actions Artifacts or Releases)
+- Unzip anywhere, open the folder, and double‑click `start.bat`
+- On first run it will create `config.py`. Enter your SSH details, save, then run again
+
+Option B: Run from source
+- Double‑click `scripts/windows/run_from_source.bat`
+- It creates a local `.venv`, installs dependencies, prepares `config.py`, and launches the app
+
+### Linux/macOS (developers)
+
+1. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Configure your hosts:**
+2. Configure your hosts:
    ```bash
    cp config/config_example.py config.py
    # Edit config.py with your SSH details
    ```
 
-3. **Run the monitor:**
+3. Run the monitor:
    ```bash
    python3 src/radar_distance_monitor.py
    ```
