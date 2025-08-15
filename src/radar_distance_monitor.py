@@ -163,6 +163,9 @@ class RealTimeGrapher:
         self.collectors = collectors
         self.max_points = max_points
         self.time_window = 120  # Show last 2 minutes (120 seconds)
+        self.scrollback_mode = False  # When True, shows all data with scrolling
+        self.zoom_start = 0  # Start time for zoomed view
+        self.zoom_duration = 120  # Duration of zoomed view in seconds
         
         # Data storage for each host
         self.data = {}
@@ -190,7 +193,7 @@ class RealTimeGrapher:
         self.latest_logs = {collector.host_id: None for collector in collectors}
         self.ax.set_xlabel('Time (HH:MM:SS)')
         self.ax.set_ylabel('Distance (meters)')
-        self.ax.set_title('Real-time Radar Distance Monitoring')
+        self.ax.set_title('Real-time Radar Distance Monitoring (Press S for scrollback mode)')
         self.ax.grid(True, alpha=0.3)
         
         # Set up time formatting for X-axis
@@ -215,6 +218,9 @@ class RealTimeGrapher:
         
         # Animation setup
         self.start_time = time.time()
+        
+        # Connect keyboard events for scrollback control
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         
     def update_plot(self, frame):
         """Update the plot with new data."""
@@ -266,26 +272,47 @@ class RealTimeGrapher:
                             host_data['connected'] = False
                             legend_needs_update = True
             
-            # Remove old data points (older than time_window)
-            cutoff_time = current_relative_time - self.time_window
-            while host_data['times'] and host_data['times'][0] < cutoff_time:
-                host_data['times'].popleft()
-                host_data['distances'].popleft()
+            # Remove old data points (older than time_window) only if not in scrollback mode
+            if not self.scrollback_mode:
+                cutoff_time = current_relative_time - self.time_window
+                while host_data['times'] and host_data['times'][0] < cutoff_time:
+                    host_data['times'].popleft()
+                    host_data['distances'].popleft()
             
             # Update the line plot
             if host_data['times'] and host_data['distances']:
                 host_data['line'].set_data(list(host_data['times']), list(host_data['distances']))
         
-        # Set up time window (always show last 2 minutes)
-        time_start = current_relative_time - self.time_window
-        time_end = current_relative_time
+        # Set up time window
+        if self.scrollback_mode:
+            # In scrollback mode, show a window starting from zoom_start
+            time_start = self.zoom_start
+            time_end = self.zoom_start + self.zoom_duration
+            # Ensure we don't go beyond available data
+            max_time = current_relative_time
+            if time_end > max_time:
+                time_end = max_time
+                time_start = max(0, time_end - self.zoom_duration)
+        else:
+            # Normal mode: show last 2 minutes
+            time_start = current_relative_time - self.time_window
+            time_end = current_relative_time
+        
         self.ax.set_xlim(time_start, time_end)
         
-        # Auto-scale Y-axis based on current data
+        # Auto-scale Y-axis based on current data in view
         all_distances = []
         for host_data in self.data.values():
-            if host_data['distances']:
-                all_distances.extend(host_data['distances'])
+            if host_data['distances'] and host_data['times']:
+                # In scrollback mode, only consider distances within the current time window
+                if self.scrollback_mode:
+                    visible_distances = []
+                    for t, d in zip(host_data['times'], host_data['distances']):
+                        if time_start <= t <= time_end:
+                            visible_distances.append(d)
+                    all_distances.extend(visible_distances)
+                else:
+                    all_distances.extend(host_data['distances'])
         
         if all_distances:
             min_dist = min(all_distances)
@@ -369,6 +396,53 @@ class RealTimeGrapher:
                 f"[{rel_ts:6.1f}s]  {collector.tag:<14}  pres:{pres_str:>1}  dist:{dist_str:>9}"
             )
         self.log_text.set_text("\n".join(rendered))
+    
+    def on_key_press(self, event):
+        """Handle keyboard events for scrollback and zoom control."""
+        if event.key == 's':
+            # Toggle scrollback mode
+            self.scrollback_mode = not self.scrollback_mode
+            if self.scrollback_mode:
+                current_time = time.time() - self.start_time
+                self.zoom_start = max(0, current_time - self.zoom_duration)
+                self.ax.set_title('Real-time Radar Distance Monitoring (SCROLLBACK MODE - Press S to toggle, ← → to scroll, + - to zoom)')
+                logger.info("Scrollback mode ENABLED - Use arrow keys to scroll, +/- to zoom, S to toggle")
+            else:
+                self.ax.set_title('Real-time Radar Distance Monitoring')
+                logger.info("Scrollback mode DISABLED - Back to real-time view")
+        
+        elif self.scrollback_mode and event.key == 'left':
+            # Scroll backward
+            scroll_amount = self.zoom_duration * 0.1  # 10% of current view
+            self.zoom_start = max(0, self.zoom_start - scroll_amount)
+        
+        elif self.scrollback_mode and event.key == 'right':
+            # Scroll forward
+            scroll_amount = self.zoom_duration * 0.1  # 10% of current view
+            current_time = time.time() - self.start_time
+            max_start = max(0, current_time - self.zoom_duration)
+            self.zoom_start = min(max_start, self.zoom_start + scroll_amount)
+        
+        elif self.scrollback_mode and (event.key == '+' or event.key == '='):
+            # Zoom in (reduce duration)
+            old_center = self.zoom_start + self.zoom_duration / 2
+            self.zoom_duration = max(10, self.zoom_duration * 0.8)  # Min 10 seconds
+            self.zoom_start = max(0, old_center - self.zoom_duration / 2)
+        
+        elif self.scrollback_mode and event.key == '-':
+            # Zoom out (increase duration)
+            old_center = self.zoom_start + self.zoom_duration / 2
+            self.zoom_duration = min(3600, self.zoom_duration * 1.25)  # Max 1 hour
+            self.zoom_start = max(0, old_center - self.zoom_duration / 2)
+        
+        elif self.scrollback_mode and event.key == 'home':
+            # Go to beginning
+            self.zoom_start = 0
+        
+        elif self.scrollback_mode and event.key == 'end':
+            # Go to end (current time)
+            current_time = time.time() - self.start_time
+            self.zoom_start = max(0, current_time - self.zoom_duration)
 
 async def run_ssh_collectors(collectors: List[RadarDataCollector]):
     """Run all SSH collectors concurrently."""
@@ -604,6 +678,7 @@ def main():
         # Start real-time plotting (this will block until window is closed)
         try:
             logger.info("Starting real-time graph...")
+            logger.info("TIP: Press 'S' to enable scrollback mode for detailed analysis")
             ani = grapher.start()
             # Keep the animation alive
             plt.show()
