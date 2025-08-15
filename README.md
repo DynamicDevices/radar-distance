@@ -15,6 +15,15 @@ Option B: Run from source
 - Double‑click `scripts/windows/run_from_source.bat`
 - It creates a local `.venv`, installs dependencies, prepares `config.py`, and launches the app
 
+### Linux (recommended for testers)
+
+Option A: Run from source (one-click)
+- Run `./scripts/linux/run_from_source.sh`
+- It creates a local `.venv`, installs dependencies, prepares `config.py`, and launches the app
+
+Option B: Manual setup
+- Run `./scripts/linux/start.sh` (for packaged executable bundles)
+
 ### Linux/macOS (developers)
 
 1. Install dependencies:
