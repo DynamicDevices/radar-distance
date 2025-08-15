@@ -1,6 +1,6 @@
 # Radar Distance Monitor
 
-A Python application that connects to two SSH hosts, runs distance measurement commands, and displays real-time distance data in a graph.
+A Python application that connects to one or more SSH hosts, runs distance measurement commands, and displays real-time distance data in a graph.
 
 ## Quick Start
 

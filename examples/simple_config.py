@@ -1,26 +1,37 @@
 #!/usr/bin/env python3
 """
 Simple configuration example for radar distance monitoring.
-This example shows a basic setup for monitoring two radar sensors.
+This example shows a basic setup for monitoring a single radar sensor.
 """
 
-# SSH connection settings for Host 1 - Front entrance sensor
-HOST1_CONFIG = {
-    'host': 'sensor1.local',        # Replace with your sensor host
-    'username': 'admin',            # Replace with your username
-    'password': 'your_password',    # Replace with your password
-    'command': 'radar_distance',    # Replace with your radar command
-    'tag': 'Front Entrance',        # Friendly name for the chart
-}
+# Single host configuration using new HOSTS format
+HOSTS = [
+    {
+        'host': 'sensor1.local',        # Replace with your sensor host
+        'username': 'admin',            # Replace with your username
+        'password': 'your_password',    # Replace with your password
+        'command': 'radar_distance',    # Replace with your radar command
+        'tag': 'Front Entrance',        # Friendly name for the chart
+    },
+]
 
-# SSH connection settings for Host 2 - Back entrance sensor
-HOST2_CONFIG = {
-    'host': 'sensor2.local',        # Replace with your sensor host
-    'username': 'admin',            # Replace with your username
-    'password': 'your_password',    # Replace with your password
-    'command': 'radar_distance',    # Replace with your radar command
-    'tag': 'Back Entrance',         # Friendly name for the chart
-}
+# For multiple hosts, just add more entries:
+# HOSTS = [
+#     {
+#         'host': 'sensor1.local',
+#         'username': 'admin',
+#         'password': 'your_password',
+#         'command': 'radar_distance',
+#         'tag': 'Front Entrance',
+#     },
+#     {
+#         'host': 'sensor2.local',
+#         'username': 'admin',
+#         'password': 'your_password',
+#         'command': 'radar_distance',
+#         'tag': 'Back Entrance',
+#     },
+# ]
 
 # Graph settings
 GRAPH_CONFIG = {

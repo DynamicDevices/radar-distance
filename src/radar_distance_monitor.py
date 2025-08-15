@@ -38,6 +38,8 @@ class RadarDataCollector:
         self.data_queue = queue.Queue()
         self.log_queue = queue.Queue()
         self.running = False
+        self.chip_id = None  # Store detected chip ID
+        self.chip_model = None  # Store detected chip model
         
     async def collect_data(self):
         """Connect to host via SSH and collect radar data."""
@@ -80,6 +82,21 @@ class RadarDataCollector:
                                     self.log_queue.put((time.time(), 'STDOUT', line))
                                 except Exception:
                                     pass
+                                
+                                # Check for chip ID information
+                                if 'chip id :' in line.lower():
+                                    try:
+                                        # Extract chip ID and model from line like: "get status chipid 0  chip id : 00000303 BGT60TR13C/BGT60TR13D"
+                                        parts = line.split('chip id :')
+                                        if len(parts) > 1:
+                                            chip_info = parts[1].strip().split()
+                                            if len(chip_info) >= 2:
+                                                self.chip_id = chip_info[0]
+                                                self.chip_model = chip_info[1]
+                                                logger.info(f"{self.host_id}: Detected chip {self.chip_model} (ID: {self.chip_id})")
+                                    except Exception as e:
+                                        logger.debug(f"{self.host_id}: Error parsing chip ID from '{line}': {e}")
+                                
                                 try:
                                     parts = line.split()
                                     if len(parts) >= 2:
@@ -95,8 +112,22 @@ class RadarDataCollector:
                                             # Put None to indicate no presence detected
                                             self.data_queue.put((timestamp, None))
                                             
-                                except (ValueError, IndexError) as e:
-                                    logger.warning(f"{self.host_id}: Error parsing line '{line}': {e}")
+                                except (ValueError, IndexError):
+                                    # Skip logging for known initialization/status messages
+                                    known_init_messages = [
+                                        'using alternate antenna', 'debugging on', 'spi speed',
+                                        'using sensitivity setting', 'using range min', 'using range max',
+                                        'spi max speed', 'get status chipid', 'slice size',
+                                        'assuming', 'setup presence sensing', 'get defaults',
+                                        'create done', 'chip id :'
+                                    ]
+                                    
+                                    line_lower = line.lower()
+                                    is_known_message = any(msg in line_lower for msg in known_init_messages)
+                                    
+                                    if not is_known_message:
+                                        # Only log parsing errors for lines that might actually be data
+                                        logger.debug(f"{self.host_id}: Could not parse data from line: '{line}'")
                     
                     async def read_stderr():
                         async for line in process.stderr:
@@ -163,7 +194,7 @@ class RealTimeGrapher:
         colors = ['blue', 'red', 'green', 'orange', 'purple']
         for i, collector in enumerate(collectors):
             color = colors[i % len(colors)]
-            line, = self.ax.plot([], [], color=color, label=f'{collector.tag} (Connecting...)', linewidth=2)
+            line, = self.ax.plot([], [], color=color, label=f'{collector.tag} (⚡ Connecting...)', linewidth=2)
             self.data[collector.host_id]['line'] = line
         
         self.legend = self.ax.legend(loc='upper right')
@@ -263,7 +294,7 @@ class RealTimeGrapher:
         return [host_data['line'] for host_data in self.data.values()]
     
     def update_legend(self):
-        """Update the legend with current connection status."""
+        """Update the legend with current connection status and chip information."""
         labels = []
         for collector in self.collectors:
             host_data = self.data[collector.host_id]
@@ -273,7 +304,15 @@ class RealTimeGrapher:
                 status = "✗ Disconnected"
             else:
                 status = "⚡ Connecting..."
-            labels.append(f"{collector.tag} ({status})")
+            
+            # Add chip information if available
+            chip_info = ""
+            if collector.chip_model and collector.chip_id:
+                chip_info = f" [{collector.chip_model}:{collector.chip_id[:6]}]"
+            elif collector.chip_model:
+                chip_info = f" [{collector.chip_model}]"
+            
+            labels.append(f"{collector.tag}{chip_info} ({status})")
         
         # Update legend with fixed position
         self.legend.remove()
@@ -357,17 +396,26 @@ def main():
     parser = argparse.ArgumentParser(description='Real-time radar distance monitoring')
     parser.add_argument('--config-file', action='store_true', 
                        help='Use config.py file instead of command line arguments')
-    parser.add_argument('--host1', help='First SSH host')
-    parser.add_argument('--user1', help='Username for first host')
-    parser.add_argument('--pass1', help='Password for first host')
-    parser.add_argument('--cmd1', help='Command to run on first host')
-    parser.add_argument('--tag1', help='Display name for first host on chart')
     
-    parser.add_argument('--host2', help='Second SSH host')
-    parser.add_argument('--user2', help='Username for second host')
-    parser.add_argument('--pass2', help='Password for second host')
-    parser.add_argument('--cmd2', help='Command to run on second host')
-    parser.add_argument('--tag2', help='Display name for second host on chart')
+    # Legacy arguments for backward compatibility (maintain host1/host2 for existing scripts)
+    parser.add_argument('--host1', help='First SSH host (legacy)')
+    parser.add_argument('--user1', help='Username for first host (legacy)')
+    parser.add_argument('--pass1', help='Password for first host (legacy)')
+    parser.add_argument('--cmd1', help='Command to run on first host (legacy)')
+    parser.add_argument('--tag1', help='Display name for first host on chart (legacy)')
+    
+    parser.add_argument('--host2', help='Second SSH host (legacy)')
+    parser.add_argument('--user2', help='Username for second host (legacy)')
+    parser.add_argument('--pass2', help='Password for second host (legacy)')
+    parser.add_argument('--cmd2', help='Command to run on second host (legacy)')
+    parser.add_argument('--tag2', help='Display name for second host on chart (legacy)')
+    
+    # New flexible host arguments
+    parser.add_argument('--host', action='append', help='SSH host (can be specified multiple times)')
+    parser.add_argument('--user', action='append', help='Username (must match number of hosts)')
+    parser.add_argument('--password', action='append', help='Password (must match number of hosts)')
+    parser.add_argument('--command', action='append', help='Command to run (must match number of hosts)')
+    parser.add_argument('--tag', action='append', help='Display name for host on chart (optional)')
     
     parser.add_argument('--max-points', type=int, default=100, 
                        help='Maximum number of data points to display')
@@ -379,8 +427,10 @@ def main():
     # Check if config.py exists and use it by default, or if --config-file is specified
     config_exists = os.path.exists('config.py')
     # Use config file if explicitly requested, or if it exists and no CLI args provided
-    cli_args_provided = any([args.host1, args.user1, args.pass1, args.cmd1, 
-                           args.host2, args.user2, args.pass2, args.cmd2])
+    legacy_args_provided = any([args.host1, args.user1, args.pass1, args.cmd1, 
+                               args.host2, args.user2, args.pass2, args.cmd2])
+    new_args_provided = any([args.host, args.user, args.password, args.command])
+    cli_args_provided = legacy_args_provided or new_args_provided
     use_config_file = args.config_file or (config_exists and not cli_args_provided)
     
     if use_config_file:
@@ -396,40 +446,119 @@ def main():
                 logging.getLogger().setLevel(numeric_level)
         
         # Create data collectors from config
-        collectors = [
-            RadarDataCollector(
-                config.HOST1_CONFIG['host'],
-                config.HOST1_CONFIG['username'],
-                config.HOST1_CONFIG['password'],
-                config.HOST1_CONFIG['command'],
-                "Host-1",
-                config.HOST1_CONFIG.get('tag', 'Host-1')
-            ),
-            RadarDataCollector(
-                config.HOST2_CONFIG['host'],
-                config.HOST2_CONFIG['username'],
-                config.HOST2_CONFIG['password'],
-                config.HOST2_CONFIG['command'],
-                "Host-2",
-                config.HOST2_CONFIG.get('tag', 'Host-2')
-            )
-        ]
+        collectors = []
+        
+        # Check if using new HOSTS format or legacy HOST1_CONFIG/HOST2_CONFIG format
+        if hasattr(config, 'HOSTS') and config.HOSTS:
+            # New format: list of hosts
+            for i, host_config in enumerate(config.HOSTS):
+                host_id = f"Host-{i+1}"
+                collectors.append(RadarDataCollector(
+                    host_config['host'],
+                    host_config['username'],
+                    host_config['password'],
+                    host_config['command'],
+                    host_id,
+                    host_config.get('tag', host_id)
+                ))
+        else:
+            # Legacy format: maintain backward compatibility
+            if hasattr(config, 'HOST1_CONFIG'):
+                collectors.append(RadarDataCollector(
+                    config.HOST1_CONFIG['host'],
+                    config.HOST1_CONFIG['username'],
+                    config.HOST1_CONFIG['password'],
+                    config.HOST1_CONFIG['command'],
+                    "Host-1",
+                    config.HOST1_CONFIG.get('tag', 'Host-1')
+                ))
+            
+            if hasattr(config, 'HOST2_CONFIG'):
+                collectors.append(RadarDataCollector(
+                    config.HOST2_CONFIG['host'],
+                    config.HOST2_CONFIG['username'],
+                    config.HOST2_CONFIG['password'],
+                    config.HOST2_CONFIG['command'],
+                    "Host-2",
+                    config.HOST2_CONFIG.get('tag', 'Host-2')
+                ))
+        
+        # Validate that we have at least one host configured
+        if not collectors:
+            logger.error("No hosts configured. Please add HOSTS list or HOST1_CONFIG/HOST2_CONFIG to your config.py")
+            sys.exit(1)
+        
+        logger.info(f"Configured {len(collectors)} host(s) for monitoring")
         
         # Get max points from config
         max_points = getattr(config, 'GRAPH_CONFIG', {}).get('max_points', 100)
         
     else:
         # Use command line arguments
-        if not all([args.host1, args.user1, args.pass1, args.cmd1, 
-                   args.host2, args.user2, args.pass2, args.cmd2]):
+        logger.info("Using command line arguments")
+        collectors = []
+        
+        # Check if using new flexible format
+        if new_args_provided:
+            # Validate that we have the required arguments
+            if not args.host:
+                logger.error("No hosts specified with --host argument")
+                sys.exit(1)
+            
+            # Validate that arrays have consistent lengths
+            num_hosts = len(args.host)
+            if args.user and len(args.user) != num_hosts:
+                logger.error(f"Number of usernames ({len(args.user)}) must match number of hosts ({num_hosts})")
+                sys.exit(1)
+            if args.password and len(args.password) != num_hosts:
+                logger.error(f"Number of passwords ({len(args.password)}) must match number of hosts ({num_hosts})")
+                sys.exit(1)
+            if args.command and len(args.command) != num_hosts:
+                logger.error(f"Number of commands ({len(args.command)}) must match number of hosts ({num_hosts})")
+                sys.exit(1)
+            if args.tag and len(args.tag) != num_hosts:
+                logger.error(f"Number of tags ({len(args.tag)}) must match number of hosts ({num_hosts})")
+                sys.exit(1)
+            
+            # Ensure we have required fields
+            if not args.user or not args.password or not args.command:
+                logger.error("Must specify --user, --password, and --command for each host")
+                sys.exit(1)
+            
+            # Create collectors for new format
+            for i in range(num_hosts):
+                host_id = f"Host-{i+1}"
+                tag = args.tag[i] if args.tag else host_id
+                collectors.append(RadarDataCollector(
+                    args.host[i],
+                    args.user[i],
+                    args.password[i],
+                    args.command[i],
+                    host_id,
+                    tag
+                ))
+        
+        elif legacy_args_provided:
+            # Legacy format: support both single host and dual host configurations
+            if args.host1 and args.user1 and args.pass1 and args.cmd1:
+                collectors.append(RadarDataCollector(
+                    args.host1, args.user1, args.pass1, args.cmd1, "Host-1", args.tag1
+                ))
+            
+            if args.host2 and args.user2 and args.pass2 and args.cmd2:
+                collectors.append(RadarDataCollector(
+                    args.host2, args.user2, args.pass2, args.cmd2, "Host-2", args.tag2
+                ))
+            
+            if not collectors:
+                logger.error("No valid host configurations provided. At least host1 configuration is required.")
+                sys.exit(1)
+        
+        else:
             logger.error("Missing required command line arguments. Use --help for usage or create config.py")
             sys.exit(1)
         
-        logger.info("Using command line arguments")
-        collectors = [
-            RadarDataCollector(args.host1, args.user1, args.pass1, args.cmd1, "Host-1", args.tag1),
-            RadarDataCollector(args.host2, args.user2, args.pass2, args.cmd2, "Host-2", args.tag2)
-        ]
+        logger.info(f"Configured {len(collectors)} host(s) for monitoring")
         max_points = args.max_points
     
     if args.test_mode:
