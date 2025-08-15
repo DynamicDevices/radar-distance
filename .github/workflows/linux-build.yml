@@ -1,0 +1,61 @@
+name: Build Linux Executable
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'requirements.txt'
+      - 'config/**'
+      - '.github/workflows/linux-build.yml'
+      - 'scripts/linux/**'
+  workflow_dispatch:
+
+# Note: This workflow builds Linux executables on every push to main.
+# For release builds with both platforms, use the multi-platform-build workflow.
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller --noconfirm --onefile --name RadarDistanceMonitor src/radar_distance_monitor.py
+
+      - name: Prepare bundle
+        run: |
+          mkdir -p bundle
+          cp dist/RadarDistanceMonitor bundle/
+          cp config/config_example.py bundle/
+          cp scripts/linux/start.sh bundle/
+          cp scripts/linux/run_from_source.sh bundle/
+          cp README.md bundle/README-LINUX.txt
+          chmod +x bundle/RadarDistanceMonitor
+          chmod +x bundle/start.sh
+          chmod +x bundle/run_from_source.sh
+          cd bundle && tar -czf radar-distance-linux.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-distance-linux
+          path: bundle/radar-distance-linux.tar.gz

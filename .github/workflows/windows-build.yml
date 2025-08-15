@@ -10,6 +10,9 @@ on:
       - '.github/workflows/windows-build.yml'
       - 'scripts/windows/**'
   workflow_dispatch:
+  
+# Note: This workflow builds Windows executables on every push to main.
+# For release builds with both platforms, use the multi-platform-build workflow.
 
 jobs:
   build-windows:

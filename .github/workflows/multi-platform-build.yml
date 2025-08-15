@@ -1,0 +1,104 @@
+name: Multi-Platform Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            executable: RadarDistanceMonitor.exe
+            bundle_ext: zip
+            archive_cmd: Compress-Archive -Path bundle/* -DestinationPath bundle/radar-distance-windows.zip
+            shell: powershell
+          - os: ubuntu-latest
+            platform: linux
+            executable: RadarDistanceMonitor
+            bundle_ext: tar.gz
+            archive_cmd: cd bundle && tar -czf radar-distance-linux.tar.gz *
+            shell: bash
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller --noconfirm --onefile --name RadarDistanceMonitor src/radar_distance_monitor.py
+
+      - name: Prepare bundle (Windows)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path bundle
+          Copy-Item dist/RadarDistanceMonitor.exe bundle/
+          Copy-Item config/config_example.py bundle/
+          Copy-Item scripts/windows/start.bat bundle/
+          Copy-Item README.md bundle/README-WINDOWS.txt
+          ${{ matrix.archive_cmd }}
+
+      - name: Prepare bundle (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -p bundle
+          cp dist/RadarDistanceMonitor bundle/
+          cp config/config_example.py bundle/
+          cp scripts/linux/start.sh bundle/
+          cp scripts/linux/run_from_source.sh bundle/
+          cp README.md bundle/README-LINUX.txt
+          chmod +x bundle/RadarDistanceMonitor
+          chmod +x bundle/start.sh
+          chmod +x bundle/run_from_source.sh
+          ${{ matrix.archive_cmd }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-distance-${{ matrix.platform }}
+          path: bundle/radar-distance-${{ matrix.platform }}.${{ matrix.bundle_ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            radar-distance-windows/radar-distance-windows.zip
+            radar-distance-linux/radar-distance-linux.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
