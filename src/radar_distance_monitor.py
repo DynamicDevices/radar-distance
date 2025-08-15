@@ -485,20 +485,7 @@ def main():
     parser.add_argument('--config-file', action='store_true', 
                        help='Use config.py file instead of command line arguments')
     
-    # Legacy arguments for backward compatibility (maintain host1/host2 for existing scripts)
-    parser.add_argument('--host1', help='First SSH host (legacy)')
-    parser.add_argument('--user1', help='Username for first host (legacy)')
-    parser.add_argument('--pass1', help='Password for first host (legacy)')
-    parser.add_argument('--cmd1', help='Command to run on first host (legacy)')
-    parser.add_argument('--tag1', help='Display name for first host on chart (legacy)')
-    
-    parser.add_argument('--host2', help='Second SSH host (legacy)')
-    parser.add_argument('--user2', help='Username for second host (legacy)')
-    parser.add_argument('--pass2', help='Password for second host (legacy)')
-    parser.add_argument('--cmd2', help='Command to run on second host (legacy)')
-    parser.add_argument('--tag2', help='Display name for second host on chart (legacy)')
-    
-    # New flexible host arguments
+    # Multi-host arguments
     parser.add_argument('--host', action='append', help='SSH host (can be specified multiple times)')
     parser.add_argument('--user', action='append', help='Username (must match number of hosts)')
     parser.add_argument('--password', action='append', help='Password (must match number of hosts)')
@@ -515,10 +502,7 @@ def main():
     # Check if config.py exists and use it by default, or if --config-file is specified
     config_exists = os.path.exists('config.py')
     # Use config file if explicitly requested, or if it exists and no CLI args provided
-    legacy_args_provided = any([args.host1, args.user1, args.pass1, args.cmd1, 
-                               args.host2, args.user2, args.pass2, args.cmd2])
-    new_args_provided = any([args.host, args.user, args.password, args.command])
-    cli_args_provided = legacy_args_provided or new_args_provided
+    cli_args_provided = any([args.host, args.user, args.password, args.command])
     use_config_file = args.config_file or (config_exists and not cli_args_provided)
     
     if use_config_file:
@@ -536,9 +520,8 @@ def main():
         # Create data collectors from config
         collectors = []
         
-        # Check if using new HOSTS format or legacy HOST1_CONFIG/HOST2_CONFIG format
+        # Check for HOSTS configuration
         if hasattr(config, 'HOSTS') and config.HOSTS:
-            # New format: list of hosts
             for i, host_config in enumerate(config.HOSTS):
                 host_id = f"Host-{i+1}"
                 collectors.append(RadarDataCollector(
@@ -550,30 +533,7 @@ def main():
                     host_config.get('tag', host_id)
                 ))
         else:
-            # Legacy format: maintain backward compatibility
-            if hasattr(config, 'HOST1_CONFIG'):
-                collectors.append(RadarDataCollector(
-                    config.HOST1_CONFIG['host'],
-                    config.HOST1_CONFIG['username'],
-                    config.HOST1_CONFIG['password'],
-                    config.HOST1_CONFIG['command'],
-                    "Host-1",
-                    config.HOST1_CONFIG.get('tag', 'Host-1')
-                ))
-            
-            if hasattr(config, 'HOST2_CONFIG'):
-                collectors.append(RadarDataCollector(
-                    config.HOST2_CONFIG['host'],
-                    config.HOST2_CONFIG['username'],
-                    config.HOST2_CONFIG['password'],
-                    config.HOST2_CONFIG['command'],
-                    "Host-2",
-                    config.HOST2_CONFIG.get('tag', 'Host-2')
-                ))
-        
-        # Validate that we have at least one host configured
-        if not collectors:
-            logger.error("No hosts configured. Please add HOSTS list or HOST1_CONFIG/HOST2_CONFIG to your config.py")
+            logger.error("No hosts configured. Please add HOSTS list to your config.py")
             sys.exit(1)
         
         logger.info(f"Configured {len(collectors)} host(s) for monitoring")
@@ -586,65 +546,43 @@ def main():
         logger.info("Using command line arguments")
         collectors = []
         
-        # Check if using new flexible format
-        if new_args_provided:
-            # Validate that we have the required arguments
-            if not args.host:
-                logger.error("No hosts specified with --host argument")
-                sys.exit(1)
-            
-            # Validate that arrays have consistent lengths
-            num_hosts = len(args.host)
-            if args.user and len(args.user) != num_hosts:
-                logger.error(f"Number of usernames ({len(args.user)}) must match number of hosts ({num_hosts})")
-                sys.exit(1)
-            if args.password and len(args.password) != num_hosts:
-                logger.error(f"Number of passwords ({len(args.password)}) must match number of hosts ({num_hosts})")
-                sys.exit(1)
-            if args.command and len(args.command) != num_hosts:
-                logger.error(f"Number of commands ({len(args.command)}) must match number of hosts ({num_hosts})")
-                sys.exit(1)
-            if args.tag and len(args.tag) != num_hosts:
-                logger.error(f"Number of tags ({len(args.tag)}) must match number of hosts ({num_hosts})")
-                sys.exit(1)
-            
-            # Ensure we have required fields
-            if not args.user or not args.password or not args.command:
-                logger.error("Must specify --user, --password, and --command for each host")
-                sys.exit(1)
-            
-            # Create collectors for new format
-            for i in range(num_hosts):
-                host_id = f"Host-{i+1}"
-                tag = args.tag[i] if args.tag else host_id
-                collectors.append(RadarDataCollector(
-                    args.host[i],
-                    args.user[i],
-                    args.password[i],
-                    args.command[i],
-                    host_id,
-                    tag
-                ))
-        
-        elif legacy_args_provided:
-            # Legacy format: support both single host and dual host configurations
-            if args.host1 and args.user1 and args.pass1 and args.cmd1:
-                collectors.append(RadarDataCollector(
-                    args.host1, args.user1, args.pass1, args.cmd1, "Host-1", args.tag1
-                ))
-            
-            if args.host2 and args.user2 and args.pass2 and args.cmd2:
-                collectors.append(RadarDataCollector(
-                    args.host2, args.user2, args.pass2, args.cmd2, "Host-2", args.tag2
-                ))
-            
-            if not collectors:
-                logger.error("No valid host configurations provided. At least host1 configuration is required.")
-                sys.exit(1)
-        
-        else:
-            logger.error("Missing required command line arguments. Use --help for usage or create config.py")
+        # Validate command line arguments
+        if not args.host:
+            logger.error("No hosts specified with --host argument")
             sys.exit(1)
+        
+        # Validate that arrays have consistent lengths
+        num_hosts = len(args.host)
+        if args.user and len(args.user) != num_hosts:
+            logger.error(f"Number of usernames ({len(args.user)}) must match number of hosts ({num_hosts})")
+            sys.exit(1)
+        if args.password and len(args.password) != num_hosts:
+            logger.error(f"Number of passwords ({len(args.password)}) must match number of hosts ({num_hosts})")
+            sys.exit(1)
+        if args.command and len(args.command) != num_hosts:
+            logger.error(f"Number of commands ({len(args.command)}) must match number of hosts ({num_hosts})")
+            sys.exit(1)
+        if args.tag and len(args.tag) != num_hosts:
+            logger.error(f"Number of tags ({len(args.tag)}) must match number of hosts ({num_hosts})")
+            sys.exit(1)
+        
+        # Ensure we have required fields
+        if not args.user or not args.password or not args.command:
+            logger.error("Must specify --user, --password, and --command for each host")
+            sys.exit(1)
+        
+        # Create collectors
+        for i in range(num_hosts):
+            host_id = f"Host-{i+1}"
+            tag = args.tag[i] if args.tag else host_id
+            collectors.append(RadarDataCollector(
+                args.host[i],
+                args.user[i],
+                args.password[i],
+                args.command[i],
+                host_id,
+                tag
+            ))
         
         logger.info(f"Configured {len(collectors)} host(s) for monitoring")
         max_points = args.max_points
