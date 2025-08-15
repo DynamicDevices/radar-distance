@@ -34,14 +34,14 @@ jobs:
           pyinstaller --noconfirm --onefile --name RadarDistanceMonitor src\radar_distance_monitor.py
 
       - name: Prepare bundle
-        shell: bash
+        shell: powershell
         run: |
-          mkdir -p bundle
-          cp dist/RadarDistanceMonitor.exe bundle/
-          cp config/config_example.py bundle/
-          cp scripts/windows/start.bat bundle/
-          cp README.md bundle/README-WINDOWS.txt
-          cd bundle && zip -r radar-distance-windows.zip .
+          New-Item -ItemType Directory -Force -Path bundle
+          Copy-Item dist/RadarDistanceMonitor.exe bundle/
+          Copy-Item config/config_example.py bundle/
+          Copy-Item scripts/windows/start.bat bundle/
+          Copy-Item README.md bundle/README-WINDOWS.txt
+          Compress-Archive -Path bundle/* -DestinationPath bundle/radar-distance-windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
