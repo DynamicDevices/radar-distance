@@ -32,7 +32,3 @@ fi
 
 echo "Starting Radar Distance Monitor..."
 ./RadarDistanceMonitor
-
-echo
-echo "Application exited. Press Enter to close."
-read -r

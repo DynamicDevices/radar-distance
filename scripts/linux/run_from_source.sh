@@ -49,7 +49,3 @@ fi
 
 echo "Starting application..."
 python src/radar_distance_monitor.py
-
-echo
-echo "Application exited. Press Enter to close."
-read -r

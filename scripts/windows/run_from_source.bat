@@ -35,8 +35,4 @@ if not exist config.py (
 echo Starting application...
 python src\radar_distance_monitor.py
 
-echo.
-echo Application exited. Press any key to close.
-pause >nul
-
 

@@ -11,6 +11,8 @@ import matplotlib
 matplotlib.use('TkAgg')  # Use TkAgg backend for GUI display
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.dates as mdates
+from matplotlib.ticker import FuncFormatter
 from collections import deque
 import time
 import threading
@@ -20,6 +22,7 @@ import sys
 import os
 from typing import Dict, List, Tuple, Optional
 import logging
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -185,10 +188,21 @@ class RealTimeGrapher:
         self.max_log_lines = 8  # retained but unused for now; kept for future toggles
         # Per-host latest log line (timestamp, tag, stream, line)
         self.latest_logs = {collector.host_id: None for collector in collectors}
-        self.ax.set_xlabel('Time (seconds)')
+        self.ax.set_xlabel('Time (HH:MM:SS)')
         self.ax.set_ylabel('Distance (meters)')
         self.ax.set_title('Real-time Radar Distance Monitoring')
         self.ax.grid(True, alpha=0.3)
+        
+        # Set up time formatting for X-axis
+        def time_formatter(x, pos):
+            # Convert relative seconds to HH:MM:SS format
+            total_seconds = int(x)
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+        self.ax.xaxis.set_major_formatter(FuncFormatter(time_formatter))
         
         # Create lines for each host
         colors = ['blue', 'red', 'green', 'orange', 'purple']

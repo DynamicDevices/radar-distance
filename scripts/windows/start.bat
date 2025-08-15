@@ -21,8 +21,4 @@ if not exist config.py (
 echo Starting Radar Distance Monitor...
 RadarDistanceMonitor.exe
 
-echo.
-echo Application exited. Press any key to close.
-pause >nul
-
 
