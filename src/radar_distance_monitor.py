@@ -335,6 +335,7 @@ class RealTimeGrapher:
                 try:
                     timestamp, distance = collector.data_queue.get_nowait()
                     relative_time = timestamp - self.start_time
+                    data_received = True  # Mark that we received data
                     # Add to plot data
                     host_data['times'].append(relative_time)
                     host_data['distances'].append(distance)
