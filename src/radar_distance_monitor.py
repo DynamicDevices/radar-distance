@@ -244,10 +244,21 @@ class RealTimeGrapher:
     def __init__(self, collectors: List[RadarDataCollector], max_points: int = 100):
         self.collectors = collectors
         self.max_points = max_points
-        self.time_window = 120  # Show last 2 minutes (120 seconds)
+        
+        # Time window options (in seconds)
+        self.time_windows = {
+            '1 min': 60,
+            '5 min': 300,
+            '10 min': 600,
+            '30 min': 1800
+        }
+        self.time_window_labels = list(self.time_windows.keys())
+        self.current_time_window_index = 1  # Default to 5 minutes
+        self.time_window = self.time_windows[self.time_window_labels[self.current_time_window_index]]
+        
         self.scrollback_mode = False  # When True, shows all data with scrolling
         self.zoom_start = 0  # Start time for zoomed view
-        self.zoom_duration = 120  # Duration of zoomed view in seconds
+        self.zoom_duration = self.time_window  # Duration of zoomed view in seconds
         
         # Data storage for each host
         self.data = {}
@@ -262,9 +273,9 @@ class RealTimeGrapher:
             }
         
         # Set up the plot with an additional text area for recent logs
-        self.fig = plt.figure(figsize=(12, 7.5))
-        # Main chart axes (upper area)
-        self.ax = self.fig.add_axes([0.08, 0.36, 0.88, 0.60])
+        self.fig = plt.figure(figsize=(12, 8))
+        # Main chart axes (upper area, adjusted for time window buttons)
+        self.ax = self.fig.add_axes([0.08, 0.36, 0.88, 0.55])
         # Log panel axes (lower area, larger height, placed lower to avoid overlap with legend)
         self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.30])
         self.log_ax.axis('off')
@@ -273,9 +284,30 @@ class RealTimeGrapher:
         self.max_log_lines = 8  # retained but unused for now; kept for future toggles
         # Per-host latest log line (timestamp, tag, stream, line)
         self.latest_logs = {collector.host_id: None for collector in collectors}
+        
+        # Add time window selection buttons
+        self.time_window_buttons = []
+        button_width = 0.08
+        button_height = 0.04
+        button_spacing = 0.02
+        start_x = 0.08
+        button_y = 0.92
+        
+        from matplotlib.widgets import Button
+        
+        for i, label in enumerate(self.time_window_labels):
+            button_x = start_x + i * (button_width + button_spacing)
+            button_ax = self.fig.add_axes([button_x, button_y, button_width, button_height])
+            button = Button(button_ax, label)
+            button.on_clicked(lambda event, idx=i: self.change_time_window(idx))
+            self.time_window_buttons.append(button)
+            
+        # Highlight the current active button
+        self.update_button_colors()
         self.ax.set_xlabel('Time (HH:MM:SS)')
         self.ax.set_ylabel('Distance (meters)')
-        self.ax.set_title('Real-time Radar Distance Monitoring (Press S for scrollback mode)')
+        current_window_label = self.time_window_labels[self.current_time_window_index]
+        self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (Press S for scrollback mode)')
         self.ax.grid(True, alpha=0.3)
         
         # Set up time formatting for X-axis
@@ -486,13 +518,14 @@ class RealTimeGrapher:
         if event.key == 's':
             # Toggle scrollback mode
             self.scrollback_mode = not self.scrollback_mode
+            current_window_label = self.time_window_labels[self.current_time_window_index]
             if self.scrollback_mode:
                 current_time = time.time() - self.start_time
                 self.zoom_start = max(0, current_time - self.zoom_duration)
-                self.ax.set_title('Real-time Radar Distance Monitoring (SCROLLBACK MODE - Press S to toggle, ← → to scroll, + - to zoom)')
+                self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (SCROLLBACK MODE - Press S to toggle, ← → to scroll, + - to zoom)')
                 logger.info("Scrollback mode ENABLED - Use arrow keys to scroll, +/- to zoom, S to toggle")
             else:
-                self.ax.set_title('Real-time Radar Distance Monitoring')
+                self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (Press S for scrollback mode)')
                 logger.info("Scrollback mode DISABLED - Back to real-time view")
         
         elif self.scrollback_mode and event.key == 'left':
@@ -527,6 +560,33 @@ class RealTimeGrapher:
             # Go to end (current time)
             current_time = time.time() - self.start_time
             self.zoom_start = max(0, current_time - self.zoom_duration)
+    
+    def change_time_window(self, index):
+        """Change the time window for the chart display."""
+        self.current_time_window_index = index
+        self.time_window = self.time_windows[self.time_window_labels[index]]
+        self.zoom_duration = self.time_window
+        
+        # Update title to show current time window
+        current_window_label = self.time_window_labels[index]
+        if self.scrollback_mode:
+            self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (SCROLLBACK MODE - Press S to toggle, ← → to scroll, + - to zoom)')
+        else:
+            self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (Press S for scrollback mode)')
+        
+        self.update_button_colors()
+        logger.info(f"Changed time window to: {current_window_label}")
+    
+    def update_button_colors(self):
+        """Update button colors to highlight the active time window."""
+        for i, button in enumerate(self.time_window_buttons):
+            if i == self.current_time_window_index:
+                button.ax.set_facecolor('lightblue')  # Active button
+            else:
+                button.ax.set_facecolor('lightgray')  # Inactive buttons
+        # Refresh the display
+        if hasattr(self.fig, 'canvas') and self.fig.canvas:
+            self.fig.canvas.draw_idle()
 
 async def run_ssh_collectors(collectors: List[RadarDataCollector], test_duration: int = None):
     """Run all SSH collectors concurrently."""
