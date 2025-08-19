@@ -274,10 +274,10 @@ class RealTimeGrapher:
         
         # Set up the plot with an additional text area for recent logs
         self.fig = plt.figure(figsize=(12, 8))
-        # Main chart axes (normal chart area with space for x-axis labels)
-        self.ax = self.fig.add_axes([0.08, 0.50, 0.88, 0.45])
+        # Main chart axes (optimized chart area with space for x-axis labels)
+        self.ax = self.fig.add_axes([0.08, 0.42, 0.88, 0.53])
         # Log panel axes (lower area, positioned below button area)
-        self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.30])
+        self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.32])
         self.log_ax.axis('off')
         # Increase font size for distance viewing (half previous), and nudge one line down
         self.log_text = self.log_ax.text(0.01, 0.90, "", va='top', ha='left', family='monospace', fontsize=22)
@@ -285,13 +285,13 @@ class RealTimeGrapher:
         # Per-host latest log line (timestamp, tag, stream, line)
         self.latest_logs = {collector.host_id: None for collector in collectors}
         
-        # Add time window selection buttons (positioned in dedicated space between chart and log panel)
+        # Add time window selection buttons (positioned closer to chart with minimal gap)
         self.time_window_buttons = []
         button_width = 0.08
         button_height = 0.025
         button_spacing = 0.02
         start_x = 0.08
-        button_y = 0.34  # Positioned in dedicated button zone, well below chart
+        button_y = 0.37  # Positioned closer to chart with minimal but clear separation
         
         from matplotlib.widgets import Button
         
