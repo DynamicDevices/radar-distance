@@ -275,9 +275,9 @@ class RealTimeGrapher:
         # Set up the plot with an additional text area for recent logs
         self.fig = plt.figure(figsize=(12, 8))
         # Main chart axes (upper area, adjusted for time window buttons)
-        self.ax = self.fig.add_axes([0.08, 0.32, 0.88, 0.55])
+        self.ax = self.fig.add_axes([0.08, 0.28, 0.88, 0.56])
         # Log panel axes (lower area, larger height, placed lower to avoid overlap with legend)
-        self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.26])
+        self.log_ax = self.fig.add_axes([0.08, 0.02, 0.88, 0.22])
         self.log_ax.axis('off')
         # Increase font size for distance viewing (half previous), and nudge one line down
         self.log_text = self.log_ax.text(0.01, 0.90, "", va='top', ha='left', family='monospace', fontsize=22)
@@ -285,13 +285,13 @@ class RealTimeGrapher:
         # Per-host latest log line (timestamp, tag, stream, line)
         self.latest_logs = {collector.host_id: None for collector in collectors}
         
-        # Add time window selection buttons (positioned below title)
+        # Add time window selection buttons (positioned well below title)
         self.time_window_buttons = []
         button_width = 0.08
         button_height = 0.03
         button_spacing = 0.02
         start_x = 0.08
-        button_y = 0.89  # Moved down to avoid overlapping with title
+        button_y = 0.86  # Moved further down to ensure no overlap with title
         
         from matplotlib.widgets import Button
         
