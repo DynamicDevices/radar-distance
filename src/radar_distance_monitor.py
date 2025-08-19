@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class RadarDataCollector:
     """Handles SSH connection and data collection from a single host."""
     
-    def __init__(self, host: str, username: str, password: str, command: str, host_id: str, tag: str = None):
+    def __init__(self, host: str, username: str, password: str, command: str, host_id: str, tag: str = None, enable_file_logging: bool = False):
         self.host = host
         self.username = username
         self.password = password
@@ -40,9 +40,70 @@ class RadarDataCollector:
         self.tag = tag or host_id  # Use tag if provided, otherwise fall back to host_id
         self.data_queue = queue.Queue()
         self.log_queue = queue.Queue()
+        self.status_queue = queue.Queue()  # For tracking presence/distance status
         self.running = False
         self.chip_id = None  # Store detected chip ID
         self.chip_model = None  # Store detected chip model
+        self.enable_file_logging = enable_file_logging
+        self.log_file = None  # File handle for logging
+        self.log_filename = None  # Store the log filename
+        
+    def create_log_file(self):
+        """Create a log file for this host based on IP address and chip ID."""
+        if not self.enable_file_logging:
+            return
+            
+        # Clean IP address for filename (replace dots with underscores)
+        clean_ip = self.host.replace('.', '_')
+        
+        # Use chip model and ID if available, otherwise use host info
+        if self.chip_model and self.chip_id:
+            # Clean chip model for filename (replace slashes and other invalid chars)
+            clean_chip_model = self.chip_model.replace('/', '-').replace('\\', '-')
+            chip_info = f"{clean_chip_model}_{self.chip_id[:8]}"  # Use first 8 chars of chip ID
+        else:
+            chip_info = "unknown_chip"
+            
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = f"radar_data_{clean_ip}_{chip_info}_{timestamp}.csv"
+        
+        try:
+            # Create logs directory if it doesn't exist
+            import os
+            os.makedirs("logs", exist_ok=True)
+            
+            # Open log file for writing
+            self.log_file = open(f"logs/{self.log_filename}", 'w')
+            # Write CSV header with both processed and raw values
+            self.log_file.write("timestamp,relative_time,processed_presence,processed_distance,raw_presence,raw_distance,raw_line\n")
+            self.log_file.flush()
+            logger.info(f"{self.host_id}: Created log file: logs/{self.log_filename}")
+        except Exception as e:
+            logger.error(f"{self.host_id}: Failed to create log file: {e}")
+            self.log_file = None
+    
+    def write_to_log(self, timestamp: float, presence: int, distance: float, raw_line: str, raw_presence: int = None, raw_distance: float = None):
+        """Write data to log file if logging is enabled."""
+        if self.log_file and self.enable_file_logging:
+            try:
+                # Convert timestamp to readable format
+                dt = datetime.fromtimestamp(timestamp)
+                timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # millisecond precision
+                relative_time = timestamp - getattr(self, 'start_time', timestamp)
+                
+                # Escape any commas in raw_line for CSV
+                escaped_raw_line = raw_line.replace(',', ';').replace('\n', ' ').replace('\r', ' ')
+                
+                # Include raw and processed values for comparison
+                raw_pres = raw_presence if raw_presence is not None else presence
+                raw_dist = raw_distance if raw_distance is not None else distance
+                
+                # Write CSV row with both raw and processed values
+                self.log_file.write(f"{timestamp_str},{relative_time:.3f},{presence},{distance},{raw_pres},{raw_dist},{escaped_raw_line}\n")
+                self.log_file.flush()
+            except Exception as e:
+                logger.error(f"{self.host_id}: Error writing to log file: {e}")
         
     async def collect_data(self):
         """Connect to host via SSH and collect radar data."""
@@ -69,6 +130,7 @@ class RadarDataCollector:
                     term_type='xterm'
                 ) as process:
                     self.running = True
+                    self.start_time = time.time()  # Record start time for relative calculations
                     
                     logger.info(f"Successfully started command on {self.host_id}")
                     
@@ -97,23 +159,35 @@ class RadarDataCollector:
                                                 self.chip_id = chip_info[0]
                                                 self.chip_model = chip_info[1]
                                                 logger.info(f"{self.host_id}: Detected chip {self.chip_model} (ID: {self.chip_id})")
+                                                # Create log file now that we have chip information
+                                                self.create_log_file()
                                     except Exception as e:
                                         logger.debug(f"{self.host_id}: Error parsing chip ID from '{line}': {e}")
                                 
                                 try:
                                     parts = line.split()
                                     if len(parts) >= 2:
-                                        presence = int(parts[0])
-                                        distance = float(parts[1])
+                                        raw_presence = int(parts[0])
+                                        raw_distance = float(parts[1])
                                         timestamp = time.time()
                                         
-                                        # Only queue valid distance measurements
-                                        if presence == 1:
-                                            self.data_queue.put((timestamp, distance))
-                                            logger.debug(f"{self.host_id}: Distance = {distance}m")
+                                        # If presence is 0, force distance to 0 regardless of what radar reports
+                                        processed_presence = raw_presence
+                                        processed_distance = raw_distance if raw_presence == 1 else 0.0
+                                        
+                                        # Write to log file with both raw and processed values
+                                        self.write_to_log(timestamp, processed_presence, processed_distance, line, raw_presence, raw_distance)
+                                        
+                                        # Always update status for log display (with processed values)
+                                        self.status_queue.put((timestamp, processed_presence, processed_distance))
+                                        
+                                        # Only queue data points when presence is detected (for plotting)
+                                        if processed_presence == 1:
+                                            self.data_queue.put((timestamp, processed_distance))
+                                            logger.debug(f"{self.host_id}: Raw={raw_presence},{raw_distance:.3f} -> Processed={processed_presence},{processed_distance:.3f}")
                                         else:
-                                            # Put None to indicate no presence detected
-                                            self.data_queue.put((timestamp, None))
+                                            logger.debug(f"{self.host_id}: Raw={raw_presence},{raw_distance:.3f} -> Processed={processed_presence},{processed_distance:.3f} (no plot)")
+                                        # Don't queue anything when presence = 0 (no plotting)
                                             
                                 except (ValueError, IndexError):
                                     # Skip logging for known initialization/status messages
@@ -155,6 +229,14 @@ class RadarDataCollector:
     def stop(self):
         """Stop data collection."""
         self.running = False
+        # Close log file if open
+        if self.log_file:
+            try:
+                self.log_file.close()
+                logger.info(f"{self.host_id}: Closed log file: {self.log_filename}")
+            except Exception as e:
+                logger.error(f"{self.host_id}: Error closing log file: {e}")
+            self.log_file = None
 
 class RealTimeGrapher:
     """Handles real-time graphing of distance data from multiple hosts."""
@@ -234,27 +316,28 @@ class RealTimeGrapher:
         for collector in self.collectors:
             host_data = self.data[collector.host_id]
             was_connected = host_data['connected']
+            data_received = False  # Initialize for each collector
             
-            # Process all available data points
-            data_received = False
+            # Process status updates for log display
+            while not collector.status_queue.empty():
+                try:
+                    timestamp, presence, distance = collector.status_queue.get_nowait()
+                    data_received = True
+                    host_data['last_data_time'] = current_time
+                    # Track last presence/distance for log display
+                    host_data['last_presence'] = presence
+                    host_data['last_distance'] = distance
+                except queue.Empty:
+                    break
+            
+            # Process plotting data points (only when presence=1)
             while not collector.data_queue.empty():
                 try:
                     timestamp, distance = collector.data_queue.get_nowait()
                     relative_time = timestamp - self.start_time
-                    data_received = True
-                    host_data['last_data_time'] = current_time
-                    
-                    if distance is not None:  # Valid distance measurement
-                        host_data['times'].append(relative_time)
-                        host_data['distances'].append(distance)
-                        # Track last presence/distance for aligned log display
-                        host_data['last_presence'] = 1
-                        host_data['last_distance'] = distance
-                    # Skip None values (no presence detected)
-                    else:
-                        host_data['last_presence'] = 0
-                        host_data['last_distance'] = None
-                        
+                    # Add to plot data
+                    host_data['times'].append(relative_time)
+                    host_data['distances'].append(distance)
                 except queue.Empty:
                     break
             
@@ -444,7 +527,7 @@ class RealTimeGrapher:
             current_time = time.time() - self.start_time
             self.zoom_start = max(0, current_time - self.zoom_duration)
 
-async def run_ssh_collectors(collectors: List[RadarDataCollector]):
+async def run_ssh_collectors(collectors: List[RadarDataCollector], test_duration: int = None):
     """Run all SSH collectors concurrently."""
     logger.info(f"Starting SSH data collection for {len(collectors)} hosts...")
     for i, collector in enumerate(collectors):
@@ -452,7 +535,13 @@ async def run_ssh_collectors(collectors: List[RadarDataCollector]):
     
     tasks = [asyncio.create_task(collector.collect_data()) for collector in collectors]
     try:
-        await asyncio.gather(*tasks)
+        if test_duration:
+            # Wait for either all tasks to complete or test duration to expire
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=test_duration)
+        else:
+            await asyncio.gather(*tasks)
+    except asyncio.TimeoutError:
+        logger.info(f"Test duration of {test_duration} seconds completed")
     except KeyboardInterrupt:
         logger.info("Stopping data collection...")
         for collector in collectors:
@@ -494,8 +583,12 @@ def main():
     
     parser.add_argument('--max-points', type=int, default=100, 
                        help='Maximum number of data points to display')
+    parser.add_argument('--enable-file-logging', action='store_true',
+                       help='Enable logging radar data to individual CSV files per host')
     parser.add_argument('--test-mode', action='store_true',
                        help='Run in test mode (SSH connections only, no GUI)')
+    parser.add_argument('--test-duration', type=int, default=60,
+                       help='Duration in seconds for test mode (default: 60 seconds)')
     
     args = parser.parse_args()
     
@@ -522,6 +615,9 @@ def main():
         
         # Check for HOSTS configuration
         if hasattr(config, 'HOSTS') and config.HOSTS:
+            # Get file logging setting from config
+            enable_file_logging = getattr(config, 'ENABLE_FILE_LOGGING', False)
+            
             for i, host_config in enumerate(config.HOSTS):
                 host_id = f"Host-{i+1}"
                 collectors.append(RadarDataCollector(
@@ -530,7 +626,8 @@ def main():
                     host_config['password'],
                     host_config['command'],
                     host_id,
-                    host_config.get('tag', host_id)
+                    host_config.get('tag', host_id),
+                    enable_file_logging
                 ))
         else:
             logger.error("No hosts configured. Please add HOSTS list to your config.py")
@@ -581,17 +678,18 @@ def main():
                 args.password[i],
                 args.command[i],
                 host_id,
-                tag
+                tag,
+                args.enable_file_logging
             ))
         
         logger.info(f"Configured {len(collectors)} host(s) for monitoring")
         max_points = args.max_points
     
     if args.test_mode:
-        # Test mode: just run SSH connections without GUI
-        logger.info("Running in test mode (SSH connections only)")
+        # Test mode: just run SSH connections without GUI for specified duration
+        logger.info(f"Running in test mode for {args.test_duration} seconds (SSH connections only)")
         try:
-            asyncio.run(run_ssh_collectors(collectors))
+            asyncio.run(run_ssh_collectors(collectors, test_duration=args.test_duration))
         except KeyboardInterrupt:
             logger.info("Test mode interrupted by user")
         finally:
