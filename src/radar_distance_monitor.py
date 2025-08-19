@@ -301,6 +301,13 @@ class RealTimeGrapher:
             button = Button(button_ax, label)
             button.on_clicked(lambda event, idx=i: self.change_time_window(idx))
             self.time_window_buttons.append(button)
+        
+        # Add Clear Chart button after time window buttons
+        clear_button_x = start_x + len(self.time_window_labels) * (button_width + button_spacing) + button_spacing
+        clear_button_ax = self.fig.add_axes([clear_button_x, button_y, button_width, button_height])
+        self.clear_button = Button(clear_button_ax, 'Clear')
+        self.clear_button.on_clicked(self.clear_chart)
+        self.clear_button.ax.set_facecolor('lightcoral')  # Different color for clear button
             
         # Highlight the current active button
         self.update_button_colors()
@@ -576,6 +583,25 @@ class RealTimeGrapher:
         
         self.update_button_colors()
         logger.info(f"Changed time window to: {current_window_label}")
+    
+    def clear_chart(self, event):
+        """Clear all chart data and reset the display."""
+        # Clear all data for each host
+        for host_id, host_data in self.data.items():
+            host_data['times'].clear()
+            host_data['distances'].clear()
+            host_data['line'].set_data([], [])
+            
+        # Reset the chart limits
+        self.ax.set_ylim(0, 2)
+        
+        # Reset scrollback mode if active
+        if self.scrollback_mode:
+            self.scrollback_mode = False
+            current_window_label = self.time_window_labels[self.current_time_window_index]
+            self.ax.set_title(f'Real-time Radar Distance Monitoring - {current_window_label} view (Press S for scrollback mode)')
+        
+        logger.info("Chart data cleared")
     
     def update_button_colors(self):
         """Update button colors to highlight the active time window."""
